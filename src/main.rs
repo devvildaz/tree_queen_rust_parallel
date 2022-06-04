@@ -1,15 +1,14 @@
-use std::option;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::option::*;
 use std::time;
 use std::thread;
+use std::sync::{ Arc, Mutex };
 use std::sync::mpsc;
 
 struct TreeNode {
-    previous: option::Option<Rc<RefCell<Box<TreeNode>>>>,
+    previous: Option<Arc<Mutex<TreeNode>>>,
     col: i32,
     row: i32,
-    children: Vec<Rc<RefCell<Box<TreeNode>>>>
+    children: Vec<Arc<Mutex<TreeNode>>>
 }
 
 impl TreeNode {
@@ -21,23 +20,26 @@ impl TreeNode {
             children: Vec::new()
         };
     }
+    pub fn add_child(&mut self ,node: Arc<Mutex<TreeNode>>) {
+        self.children.push(node);
+    }
 }
 
-fn check_position(node: Rc<RefCell<TreeNode>>, pair: (i32,i32)) -> bool{
+fn check_position(node: Arc<Mutex<TreeNode>>, pair: (i32,i32)) -> bool{
     let mut pointer = node;
     let (col ,row) = pair;
     loop {
-        let col_p : i32 = pointer.borrow().col;
-        let row_p : i32 = pointer.borrow().row;
+        let col_p : i32 = pointer.lock().unwrap().col;
+        let row_p : i32 = pointer.lock().unwrap().row;
         
         if col_p == 0 || row_p == 0 {
             break;
         }
 
         if check_position_i32((col, row),(col_p, row_p)){
-            let new_p = match pointer.borrow().previous {
+            let new_p = match pointer.lock().unwrap().previous {
                 Some(ref x) => 
-                    Rc::clone(x)
+                    Arc::clone(x)
                 ,
                 None => break
             };
@@ -65,12 +67,12 @@ fn check_position_i32(pair : (i32, i32), pair_p : (i32, i32)) -> bool {
         return true;
 }
 
-fn find_poss_values(node : Rc<RefCell<TreeNode>>) -> Vec<(i32, i32)> {
+fn find_poss_values(node : Arc<Mutex<TreeNode>>) -> Vec<(i32, i32)> {
     let mut arr = Vec::new();
-    let col = node.borrow_mut().col;
+    let col = node.lock().unwrap().col;
     let mut idx = 1;
     while idx <= 13 {
-        if check_position(Rc::clone(&node), (col+1, idx)) {
+        if check_position(Arc::clone(&node), (col+1, idx)) {
             arr.push((col+1,idx));
         }
         idx+=1;
@@ -78,49 +80,57 @@ fn find_poss_values(node : Rc<RefCell<TreeNode>>) -> Vec<(i32, i32)> {
     return arr;
 }
 
-fn find(node: Rc<RefCell<TreeNode>>) -> bool {
-    let possible_values = find_poss_values(Rc::clone(&node));
+fn find(node: Arc<Mutex<TreeNode>>) -> bool {
+    let possible_values = find_poss_values(Arc::clone(&node));
     let mut bool_res = false;
 
-    if node.borrow().col == 13 {
+    if node.lock().unwrap().col == 13 {
         return true;
     }
 
     for item in possible_values {
         let (x,y) = item;
-        let new_node = Rc::new(RefCell::new(TreeNode::new(x,y)));
-        new_node.borrow_mut().previous = Some(Rc::clone(&node));     
-        let result = find(Rc::clone(&new_node));
-        
+        let new_node = Arc::new(Mutex::new(TreeNode::new(x,y)));
+        new_node.lock().unwrap().previous = Some(Arc::clone(&node));     
+        let result = find(Arc::clone(&new_node));
         if result {
-            node.borrow_mut().children.push(Rc::clone(&new_node));
-            //println!("({},{})", new_node.borrow().col, new_node.borrow().row);
+            node.lock().unwrap().children.push(Arc::clone(&new_node));
+            //println!("({},{})", node.lock().unwrap().col, node.lock().unwrap().row);
             bool_res = result;
         }
     }
     return bool_res;
 }
 
+fn print_solutions(node : Arc<Mutex<TreeNode>> ) {
+    let unlocked_node = node.lock().unwrap();
+    let (col, row) = (unlocked_node.col, unlocked_node.row);
+    let children = &unlocked_node.children;
+    let padding = "-".repeat(1+ (col as usize));
+    println!("{} ({},{})",padding, col, row);
+    for node_item in children {
+        print_solutions(Arc::clone(&node_item));
+    }
+}
+
 fn solution(){
-    let root = TreeNode::new(0,0);
-    let rc_root = Rc::new(RefCell::new(root));
+    let root = Arc::new(Mutex::new(TreeNode::new(0,0)));
     let now = time::Instant::now();
-    let possible_values = find_poss_values(Rc::clone(&rc_root));
+    let possible_values = find_poss_values(Arc::clone(&root));
 
     let mut handles = vec![];
 
     let (tx, rx) = mpsc::channel();
-
     for item in possible_values {
         let (x,y) = item;
-
+        let tx1 = tx.clone();
         let handle = thread::spawn(move || { 
-            let new_node = Rc::new(RefCell::new(TreeNode::new(x,y)));
-            let result = find(Rc::clone(&new_node));
+            let new_node = Arc::new(Mutex::new(TreeNode::new(x,y)));
+            let result = find(Arc::clone(&new_node));
             if result {
-                let res_to = Box::new(new_node.borrow_mut());
-                tx.send(res_to).unwrap();
+                tx1.send(new_node).unwrap();
             }
+            println!("Thread Finished");
         });
         handles.push(handle);
     }
@@ -129,10 +139,15 @@ fn solution(){
         handle.join().unwrap();
     }
 
+    drop(tx);
+    for item in rx {
+        root.lock().unwrap().children.push(item);
+    }
+    
     let elapsed_time = now.elapsed();
+    print_solutions(root);
+
     println!("Running find() took {} ms", elapsed_time.as_millis());
-
-
 }
 
 fn main() {
